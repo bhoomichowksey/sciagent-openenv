@@ -1,215 +1,299 @@
-"""
-SciAgent — HuggingFace Gradio Space
-=====================================
-Deploy this as a public Gradio Space on HuggingFace.
-SDK: Gradio | Visibility: Public
-
-Upload this file + requirements.txt to your Space.
-"""
-
-import json
-import os
-import sys
-
 import gradio as gr
+import numpy as np
 from scipy import stats
+import json
 
-# ── Import environment (works both locally and in Space) ──────────────────
-sys.path.insert(0, os.path.dirname(__file__))
-try:
-    from environment.sciagent_env import SciAgentEnv, DATASETS
-except ImportError:
-    # Inline fallback for Space deployment without subfolder
-    import random
-    from scipy import stats as _stats
+# === DATASETS ===
+DATASETS = {
+    "temperature_climate": {
+        "name": "Climate Temperature Study",
+        "group_a": [22.1, 23.4, 21.8, 24.2, 22.9, 23.1, 21.5, 24.8, 22.3, 23.7],
+        "group_b": [25.3, 26.1, 24.8, 27.2, 25.9, 26.4, 24.5, 27.8, 25.1, 26.9],
+        "context": "Comparing temperatures between two climate zones (Celsius)",
+        "correct_test": "welch_t",
+        "expected_conclusion": "significant"
+    },
+    "drug_response": {
+        "name": "Drug Response Trial",
+        "group_a": [45, 52, 48, 51, 47, 50, 46, 53, 49, 44],
+        "group_b": [48, 51, 47, 52, 49, 50, 46, 53, 48, 51],
+        "context": "Comparing biomarker levels between treatment and control groups",
+        "correct_test": "welch_t",
+        "expected_conclusion": "not_significant"
+    },
+    "exam_scores": {
+        "name": "Teaching Method Comparison",
+        "group_a": [72, 68, 75, 71, 69, 73, 70, 74, 68, 76],
+        "group_b": [81, 85, 79, 83, 87, 82, 84, 80, 86, 88],
+        "context": "Comparing exam scores between two teaching methods",
+        "correct_test": "welch_t",
+        "expected_conclusion": "significant"
+    },
+    "reaction_time": {
+        "name": "Reaction Time Study",
+        "group_a": [0.231, 0.245, 0.228, 0.251, 0.239],
+        "group_b": [0.229, 0.241, 0.235, 0.248, 0.242],
+        "context": "Comparing reaction times (seconds) between two groups",
+        "correct_test": "welch_t",
+        "expected_conclusion": "not_significant"
+    }
+}
 
-    DATASETS = [
-        {"name": "exam_scores",  "data": {"group_a": [72,85,90,68,75,88,92,70], "group_b": [65,70,78,62,69,74,80,67]}, "question": "Does group A score significantly higher than group B?"},
-        {"name": "drug_trial",   "data": {"treatment": [8.2,7.5,9.1,6.8,8.8,7.2,9.5,8.0], "placebo": [7.1,6.8,7.5,6.2,7.8,6.5,7.0,6.9]}, "question": "Does the drug reduce symptoms significantly vs placebo?"},
-        {"name": "website_ab",   "data": {"variant_a": [3.2,4.1,2.8,3.9,4.5,3.0,4.2,3.7], "variant_b": [2.1,2.8,1.9,2.5,3.1,2.3,2.7,2.4]}, "question": "Does variant A produce a significantly higher conversion rate?"},
-        {"name": "temperature",  "data": {"city_x": [22,24,23,25,21,26,24,23], "city_y": [18,20,19,21,17,22,20,19]}, "question": "Is city X significantly warmer than city Y?"},
-        {"name": "crop_yield",   "data": {"fertilizer_a": [45.2,48.1,44.7,50.3,47.8,46.5,49.1,45.9], "fertilizer_b": [40.1,42.5,39.8,43.7,41.2,40.9,42.1,41.5]}, "question": "Does fertilizer A produce significantly higher crop yield?"},
-    ]
+# === EPISODE STATE ===
+class SciAgentEpisode:
+    def __init__(self):
+        self.reset()
 
-    class SciAgentEnv:
-        def __init__(self, seed=42):
-            self.rng = random.Random(seed)
-            self.dataset = None
-            self.step_count = 0
-            self.history = []
+    def reset(self):
+        self.step = 0
+        self.dataset_key = None
+        self.dataset = None
+        self.steps_completed = []
+        self.total_reward = 0.0
+        self.history = []
 
-        def reset(self, seed=None):
-            if seed is not None:
-                self.rng = random.Random(seed)
-            self.dataset = self.rng.choice(DATASETS)
-            self.step_count = 0
-            self.history = []
-            return self.state(), {}
+    def get_state(self):
+        return {
+            "step": self.step,
+            "dataset": self.dataset_key,
+            "steps_completed": self.steps_completed,
+            "total_reward": round(self.total_reward, 3)
+        }
 
-        def step(self, action_str):
-            self.step_count += 1
-            try:
-                action = json.loads(action_str.strip().lstrip("```json").rstrip("```").strip())
-            except:
-                return self.state(), 0.0, True, False, {"error": "invalid_json"}
-            reward = self._reward(action)
-            done = self.step_count >= 3 or action.get("conclusion") is not None
-            return self.state(), reward, done, False, {"reward": reward}
+episode = SciAgentEpisode()
 
-        def state(self):
-            return {"question": self.dataset["question"], "data": self.dataset["data"], "step": self.step_count, "history": self.history}
+# === REWARD FUNCTIONS ===
+def reward_step_completion(step_num, response):
+    if response and len(response.strip()) > 20:
+        return 0.1
+    return 0.0
 
-        def _reward(self, a):
-            s = 0.2 * bool(a.get("hypothesis")) + 0.2 * bool(a.get("statistical_test")) + 0.2 * (a.get("conclusion") is not None)
-            if any(t in (a.get("statistical_test") or "").lower() for t in ["t-test","ttest","welch"]):
-                s += 0.2
-            if a.get("conclusion") is not None:
-                d = self.dataset["data"]; keys = list(d.keys())
-                try:
-                    _, p = _stats.ttest_ind(d[keys[0]], d[keys[1]], equal_var=False)
-                    if (p < 0.05) == any(w in str(a.get("conclusion","")).lower() for w in ["true","yes","significant","confirmed"]):
-                        s += 0.2
-                except: pass
-            return min(round(s, 4), 1.0)
+def reward_hypothesis_quality(hypothesis):
+    keywords = ["hypothesis", "expect", "predict", "difference", "similar", "group", "significant"]
+    score = sum(0.015 for k in keywords if k.lower() in hypothesis.lower())
+    return min(score, 0.15)
 
+def reward_test_selection(chosen_test, correct_test):
+    if chosen_test == correct_test:
+        return 0.2
+    return 0.05
 
-# ── Gradio UI ─────────────────────────────────────────────────────────────
+def reward_numerical_accuracy(p_value_guess, actual_p):
+    try:
+        error = abs(float(p_value_guess) - actual_p)
+        if error < 0.01:
+            return 0.2
+        elif error < 0.05:
+            return 0.1
+        return 0.05
+    except:
+        return 0.0
 
-def run_demo(dataset_name: str, hypothesis: str, test: str, reasoning: str, conclusion_str: str):
-    conclusion_map = {"True (significant)": True, "False (not significant)": False, "Null (need more data)": None}
-    conclusion = conclusion_map.get(conclusion_str, None)
+def reward_conclusion_correctness(conclusion, expected):
+    c = conclusion.lower()
+    if expected == "significant" and ("significant" in c or "reject" in c or "differ" in c):
+        return 0.25
+    if expected == "not_significant" and ("not significant" in c or "fail to reject" in c or "no difference" in c):
+        return 0.25
+    return 0.05
 
-    action = json.dumps({
-        "hypothesis": hypothesis,
-        "statistical_test": test,
-        "reasoning": reasoning,
-        "conclusion": conclusion,
-    })
+def reward_reasoning_coherence(full_history):
+    if len(full_history) >= 3:
+        return 0.1
+    return 0.0
 
-    env = SciAgentEnv(seed=42)
-    env.reset()
-    target = next((d for d in DATASETS if d["name"] == dataset_name), DATASETS[0])
-    env.dataset = target
-    obs, reward, done, _, info = env.step(action)
+# === STEP HANDLERS ===
+def step1_explore(dataset_choice):
+    episode.reset()
+    episode.dataset_key = dataset_choice
+    episode.dataset = DATASETS[dataset_choice]
+    episode.step = 1
 
-    d = target["data"]
-    keys = list(d.keys())
-    _, pval = stats.ttest_ind(d[keys[0]], d[keys[1]], equal_var=False)
-    ground_truth = pval < 0.05
+    d = episode.dataset
+    a = d["group_a"]
+    b = d["group_b"]
 
-    result = f"""## Evaluation Results
+    r = reward_step_completion(1, dataset_choice)
+    episode.total_reward += r
+    episode.steps_completed.append("explore")
+    episode.history.append(f"Selected dataset: {d['name']}")
 
-**Dataset:** {dataset_name}
-**Question:** {target['question']}
+    output = f"""**Step 1 — Explore Data**
 
----
+Dataset: {d['name']}
+Context: {d['context']}
 
-### Your Action
-```json
-{json.dumps(json.loads(action), indent=2)}
-```
+Group A: {a}
+- Mean: {round(np.mean(a), 3)}, Std: {round(np.std(a), 3)}, N={len(a)}
 
----
+Group B: {b}
+- Mean: {round(np.mean(b), 3)}, Std: {round(np.std(b), 3)}, N={len(b)}
 
-### Reward Breakdown
-| Component | Points |
-|---|---|
-| Hypothesis present | {0.2 if hypothesis.strip() else 0.0} / 0.2 |
-| Statistical test named | {0.2 if test.strip() else 0.0} / 0.2 |
-| Conclusion drawn | {0.2 if conclusion is not None else 0.0} / 0.2 |
-| Appropriate test (t-test family) | {0.2 if any(t in test.lower() for t in ['t-test','ttest','welch']) else 0.0} / 0.2 |
-| Correct conclusion | {0.2 if conclusion is not None and (pval < 0.05) == (conclusion is True) else 0.0} / 0.2 |
-| **Total** | **{reward:.2f} / 1.0** |
+Step reward: +{round(r, 3)} | Total: {round(episode.total_reward, 3)}
 
----
+**Now move to Step 2 → Write your hypothesis**"""
+    return output
 
-### Ground Truth (Welch t-test)
-- **p-value:** {pval:.4f}
-- **Significant at α=0.05:** {'✅ Yes' if ground_truth else '❌ No'}
-- **Your conclusion:** {'✅ Correct!' if conclusion is not None and (pval < 0.05) == (conclusion is True) else '❌ Incorrect'}
-"""
-    return result
+def step2_hypothesize(hypothesis):
+    if episode.step != 1:
+        return "Please complete Step 1 first."
+    episode.step = 2
 
+    r = reward_step_completion(2, hypothesis) + reward_hypothesis_quality(hypothesis)
+    episode.total_reward += r
+    episode.steps_completed.append("hypothesize")
+    episode.history.append(f"Hypothesis: {hypothesis}")
 
-def load_dataset_info(dataset_name: str):
-    target = next((d for d in DATASETS if d["name"] == dataset_name), DATASETS[0])
-    info = f"**Question:** {target['question']}\n\n**Data:**\n```json\n{json.dumps(target['data'], indent=2)}\n```"
-    return info
+    output = f"""**Step 2 — Hypothesis Recorded**
 
+Your hypothesis: "{hypothesis}"
 
-dataset_names = [d["name"] for d in DATASETS]
+Reward for quality hypothesis: +{round(r, 3)} | Total: {round(episode.total_reward, 3)}
 
-with gr.Blocks(
-    title="SciAgent — RL for Scientific Reasoning",
-    theme=gr.themes.Soft(primary_hue="violet"),
-    css="""
-    .container { max-width: 860px; margin: 0 auto; }
-    .reward-box { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 12px; }
-    """
-) as demo:
+**Now move to Step 3 → Choose your statistical test**"""
+    return output
 
-    gr.Markdown("""
-# 🔬 SciAgent — RL Environment for Hypothesis-Driven Science
+def step3_plan(test_choice):
+    if episode.step != 2:
+        return "Please complete Step 2 first."
+    episode.step = 3
 
-**Meta PyTorch OpenEnv Hackathon 2026**
+    correct = episode.dataset["correct_test"]
+    r = reward_step_completion(3, test_choice) + reward_test_selection(test_choice, correct)
+    episode.total_reward += r
+    episode.steps_completed.append("plan")
+    episode.history.append(f"Test chosen: {test_choice}")
 
-SciAgent trains LLMs to act like scientists: form a hypothesis, choose a statistical test, interpret results.
-This demo lets you interact with the environment directly and see your reward score.
+    feedback = "Correct test selected!" if test_choice == correct else f"Hint: {correct} is more appropriate here."
 
-> 📖 [GitHub](https://github.com/YOUR_USERNAME/sciagent-openenv) | 🤗 [Model](https://huggingface.co/YOUR_USERNAME/sciagent-qwen2.5-3b) | 📓 [Colab](https://colab.research.google.com/drive/YOUR_NOTEBOOK_ID)
-    """)
+    output = f"""**Step 3 — Test Selected**
+
+You chose: {test_choice}
+{feedback}
+
+Step reward: +{round(r, 3)} | Total: {round(episode.total_reward, 3)}
+
+**Now move to Step 4 → Run the test and enter the p-value you observe**"""
+    return output
+
+def step4_execute(p_value_input):
+    if episode.step != 3:
+        return "Please complete Step 3 first."
+    episode.step = 4
+
+    a = episode.dataset["group_a"]
+    b = episode.dataset["group_b"]
+    t_stat, actual_p = stats.ttest_ind(a, b, equal_var=False)
+
+    r = reward_step_completion(4, p_value_input) + reward_numerical_accuracy(p_value_input, actual_p)
+    episode.total_reward += r
+    episode.steps_completed.append("execute")
+    episode.history.append(f"p-value entered: {p_value_input}, actual: {round(actual_p, 4)}")
+
+    output = f"""**Step 4 — Test Executed**
+
+Actual Welch t-test result:
+- t-statistic: {round(t_stat, 4)}
+- p-value: {round(actual_p, 4)}
+
+Your p-value estimate: {p_value_input}
+Accuracy reward: +{round(r, 3)} | Total: {round(episode.total_reward, 3)}
+
+**Now move to Step 5 → Write your conclusion**"""
+    return output
+
+def step5_conclude(conclusion):
+    if episode.step != 4:
+        return "Please complete Step 4 first."
+    episode.step = 5
+
+    expected = episode.dataset["expected_conclusion"]
+    r = (reward_step_completion(5, conclusion) +
+         reward_conclusion_correctness(conclusion, expected) +
+         reward_reasoning_coherence(episode.history))
+    episode.total_reward += r
+    episode.steps_completed.append("conclude")
+    episode.history.append(f"Conclusion: {conclusion}")
+
+    a = episode.dataset["group_a"]
+    b = episode.dataset["group_b"]
+    _, actual_p = stats.ttest_ind(a, b, equal_var=False)
+    ground_truth = "significant difference" if actual_p < 0.05 else "no significant difference"
+
+    output = f"""**Step 5 — Episode Complete**
+
+Your conclusion: "{conclusion}"
+Ground truth: {ground_truth} (p={round(actual_p, 4)})
+
+Final step reward: +{round(r, 3)}
+
+**Episode Summary:**
+- Steps completed: {', '.join(episode.steps_completed)}
+- Total reward: {round(episode.total_reward, 3)} / 1.0
+- Performance: {'Excellent' if episode.total_reward > 0.7 else 'Good' if episode.total_reward > 0.5 else 'Needs improvement'}
+
+Reset to try another dataset!"""
+    return output
+
+# === GRADIO UI ===
+with gr.Blocks(title="SciAgent — Multi-Step Science RL Environment") as demo:
+    gr.Markdown("# SciAgent")
+    gr.Markdown("A 5-step reinforcement learning environment for scientific hypothesis testing. Complete all steps in order to maximize your reward score.")
 
     with gr.Row():
-        with gr.Column(scale=1):
-            gr.Markdown("### 1. Choose a Dataset")
-            dataset_dd = gr.Dropdown(choices=dataset_names, value=dataset_names[0], label="Dataset")
-            dataset_info = gr.Markdown(load_dataset_info(dataset_names[0]))
-            dataset_dd.change(fn=load_dataset_info, inputs=dataset_dd, outputs=dataset_info)
-
-        with gr.Column(scale=2):
-            gr.Markdown("### 2. Act as the Agent")
-            hypothesis_tb = gr.Textbox(
-                label="Hypothesis",
-                placeholder="e.g. Group A scores significantly higher than Group B",
-                lines=2,
+        with gr.Column():
+            gr.Markdown("### Step 1 — Explore Data")
+            dataset_dropdown = gr.Dropdown(
+                choices=list(DATASETS.keys()),
+                label="Choose a dataset",
+                value="temperature_climate"
             )
-            test_tb = gr.Textbox(
-                label="Statistical Test",
-                placeholder="e.g. Welch t-test",
+            btn1 = gr.Button("Load Dataset")
+            out1 = gr.Textbox(label="Output", lines=10)
+            btn1.click(step1_explore, inputs=dataset_dropdown, outputs=out1)
+
+        with gr.Column():
+            gr.Markdown("### Step 2 — Form Hypothesis")
+            hypothesis_input = gr.Textbox(label="Write your hypothesis", placeholder="I expect that Group A and Group B will...")
+            btn2 = gr.Button("Submit Hypothesis")
+            out2 = gr.Textbox(label="Output", lines=6)
+            btn2.click(step2_hypothesize, inputs=hypothesis_input, outputs=out2)
+
+    with gr.Row():
+        with gr.Column():
+            gr.Markdown("### Step 3 — Choose Statistical Test")
+            test_dropdown = gr.Dropdown(
+                choices=["welch_t", "student_t", "mann_whitney", "anova"],
+                label="Select test",
+                value="welch_t"
             )
-            reasoning_tb = gr.Textbox(
-                label="Reasoning",
-                placeholder="e.g. Two independent groups with unknown variance → Welch t-test",
-                lines=3,
-            )
-            conclusion_dd = gr.Dropdown(
-                choices=["True (significant)", "False (not significant)", "Null (need more data)"],
-                value="True (significant)",
-                label="Conclusion",
-            )
-            run_btn = gr.Button("▶ Run Agent Step", variant="primary")
+            btn3 = gr.Button("Select Test")
+            out3 = gr.Textbox(label="Output", lines=6)
+            btn3.click(step3_plan, inputs=test_dropdown, outputs=out3)
 
-    output_md = gr.Markdown("*Click 'Run Agent Step' to see your reward.*")
+        with gr.Column():
+            gr.Markdown("### Step 4 — Run Test & Enter p-value")
+            pval_input = gr.Textbox(label="Enter p-value you calculated", placeholder="e.g. 0.032")
+            btn4 = gr.Button("Submit p-value")
+            out4 = gr.Textbox(label="Output", lines=8)
+            btn4.click(step4_execute, inputs=pval_input, outputs=out4)
 
-    run_btn.click(
-        fn=run_demo,
-        inputs=[dataset_dd, hypothesis_tb, test_tb, reasoning_tb, conclusion_dd],
-        outputs=output_md,
-    )
+    with gr.Row():
+        with gr.Column():
+            gr.Markdown("### Step 5 — Write Conclusion")
+            conclusion_input = gr.Textbox(label="Write your conclusion", placeholder="Based on the results...")
+            btn5 = gr.Button("Submit Conclusion")
+            out5 = gr.Textbox(label="Final Results", lines=10)
+            btn5.click(step5_conclude, inputs=conclusion_input, outputs=out5)
 
-    gr.Markdown("""
----
-### How SciAgent Works
+        with gr.Column():
+            gr.Markdown("### Reset")
+            gr.Markdown("Click below to start a new episode with a different dataset.")
+            btn_reset = gr.Button("Reset Episode", variant="secondary")
+            reset_out = gr.Textbox(label="Status")
+            def do_reset():
+                episode.reset()
+                return "Episode reset. Go back to Step 1!"
+            btn_reset.click(do_reset, outputs=reset_out)
 
-| Step | Agent Action | Reward Signal |
-|---|---|---|
-| 1 | Form hypothesis | +0.2 if hypothesis present |
-| 2 | Choose statistical test | +0.2 if test named; +0.2 if t-test family |
-| 3 | Draw conclusion | +0.2 if conclusion present; +0.2 if statistically correct |
-
-**Training:** GRPO (Group Relative Policy Optimization) on Qwen2.5-3B-Instruct via Unsloth + TRL.
-Reward improved from ~0.40 (random) to ~0.72+ after 300 training steps.
-    """)
-
-if __name__ == "__main__":
-    demo.launch()
+demo.launch()
