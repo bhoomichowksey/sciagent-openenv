@@ -1,0 +1,104 @@
+name: sciagent
+version: "1.0.0"
+description: >
+  RL environment for training LLMs to conduct hypothesis-driven scientific reasoning.
+  The agent receives a dataset and a research question, then must form a hypothesis,
+  choose an appropriate statistical test, and draw a statistically correct conclusion.
+
+author: YOUR_USERNAME
+license: MIT
+tags:
+  - scientific-reasoning
+  - hypothesis-testing
+  - statistics
+  - grpo
+  - llm-reasoning
+
+environment:
+  class: SciAgentEnv
+  module: environment.sciagent_env
+  entry_point: environment/sciagent_env.py
+
+observation_space:
+  type: dict
+  fields:
+    question:
+      type: string
+      description: The research question to answer
+    data:
+      type: dict
+      description: Two-group dataset with measurements
+    step:
+      type: integer
+      description: Current step in the episode
+    history:
+      type: list
+      description: Previous actions in this episode
+
+action_space:
+  type: string
+  format: json
+  schema:
+    hypothesis:
+      type: string
+      description: The agent's hypothesis about the data
+    statistical_test:
+      type: string
+      description: The statistical test to apply (e.g., Welch t-test)
+    reasoning:
+      type: string
+      description: Step-by-step reasoning
+    conclusion:
+      type: boolean_or_null
+      description: true=significant, false=not significant, null=needs more steps
+
+reward:
+  type: composite
+  range: [0.0, 1.0]
+  components:
+    - name: hypothesis_present
+      weight: 0.2
+      description: Agent formed a hypothesis
+    - name: test_named
+      weight: 0.2
+      description: Agent named a statistical test
+    - name: conclusion_drawn
+      weight: 0.2
+      description: Agent drew a conclusion
+    - name: appropriate_test
+      weight: 0.2
+      description: Agent chose an appropriate test (t-test family)
+    - name: correct_conclusion
+      weight: 0.2
+      description: Conclusion matches ground-truth Welch t-test result
+
+training:
+  algorithm: GRPO
+  base_model: unsloth/Qwen2.5-3B-Instruct
+  framework: trl
+  optimizer: adamw_8bit
+  learning_rate: 5.0e-6
+  max_steps: 300
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  num_generations: 4
+  quantization: 4bit
+  peft: lora
+  lora_rank: 8
+
+datasets:
+  - name: exam_scores
+    description: Compare test scores between two student groups
+  - name: drug_trial
+    description: Compare treatment vs placebo outcomes
+  - name: website_ab
+    description: A/B test for website conversion rates
+  - name: temperature
+    description: Compare temperatures between two cities
+
+artifacts:
+  model: YOUR_USERNAME/sciagent-qwen2.5-3b
+  space: https://huggingface.co/spaces/YOUR_USERNAME/sciagent
+  plots:
+    - plots/loss_curve.png
+    - plots/reward_curve.png
