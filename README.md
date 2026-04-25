@@ -9,7 +9,7 @@ SciAgent is a novel reinforcement learning environment that trains language mode
 | | Link |
 |---|---|
 | 🤗 HF Space | https://huggingface.co/spaces/bhoomichowksey/sciagent |
-| 📓 Colab Notebook | https://colab.research.google.com/drive/https://colab.research.google.com/drive/1PaD5YtRZiUtMTIU5eKi--S0uZ7IkJtJ9?usp=sharing |
+| 📓 Colab Notebook | https://colab.research.google.com/drive/1PaD5YtRZiUtMTIU5eKi--S0uZ7IkJtJ9?usp=sharing |
 | 💻 GitHub Repo | https://github.com/bhoomichowksey/sciagent-openenv |
 | 🎥 Demo Video | https://youtube.com/YOUR_VIDEO_ID |
 
