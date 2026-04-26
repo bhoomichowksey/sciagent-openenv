@@ -4,7 +4,7 @@ emoji: 🔬
 colorFrom: blue
 colorTo: purple
 sdk: gradio
-sdk_version: 4.44.1
+sdk_version: 6.13.0
 app_file: app.py
 pinned: true
 ---
@@ -18,12 +18,11 @@ Built for the **OpenEnv Hackathon Round 2** — Theme: Long-Horizon Planning & I
 ---
 
 ## 🔗 Links
-
 | Resource | Link |
 |----------|------|
 | 🤗 HuggingFace Space | [bhoomichowksey/sciagent](https://huggingface.co/spaces/bhoomichowksey/sciagent) |
 | 📓 Colab Training Notebook | [Open in Colab](https://colab.research.google.com/drive/1PaD5YtRZiUtMTIU5eKi--S0uZ7IkJtJ9?usp=sharing) |
-
+| 📝 Blog Post | [Read the writeup](https://huggingface.co/spaces/bhoomichowksey/sciagent/blob/main/blog.md) |
 ---
 
 ## What is SciAgent?
